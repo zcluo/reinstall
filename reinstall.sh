@@ -865,6 +865,7 @@ get_windows_iso_link() {
                 serverdatacenter | serverdatacentercore) echo _ ;;
                 esac
                 ;;
+            # massgrave 不提供 2012 下载
             '2012 r2' | \
                 2016 | 2019 | 2022 | 2025)
                 case "$edition" in
@@ -889,13 +890,25 @@ get_windows_iso_link() {
                 case "$edition" in
                 starter)
                     case "$arch_win" in
-                    x86) echo ultimate ;;
+                    x86) echo starter ;;
                     esac
                     ;;
-                homebasic | homepremium | professional | ultimate) echo ultimate ;;
+                homebasic)
+                    case "$arch_win" in
+                    x86) echo "home basic" ;;
+                    esac
+                    ;;
+                homepremium) echo "home premium" ;;
+                professional | enterprise | ultimate) echo "$edition" ;;
                 esac
                 ;;
-            # 8.1 需到 msdl.gravesoft.dev 下载
+            # massgrave 不提供 windows 8 下载
+            8.1)
+                case "$edition" in
+                '') echo _ ;; # windows 8.1 core
+                pro | enterprise) echo "$edition" ;;
+                esac
+                ;;
             10)
                 case "$edition" in
                 home | 'home single language') echo consumer ;;
@@ -947,6 +960,8 @@ get_windows_iso_link() {
         esac
     }
 
+    # 8.1 和 11 arm 没有每月发布 iso
+    # 因此优先从 msdl 下载
     get_label_msdl() {
         case "$version" in
         8.1)
