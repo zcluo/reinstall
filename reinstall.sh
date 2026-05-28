@@ -102,6 +102,7 @@ Usage: $reinstall_____ anolis      7|8|23
                        reset
 
        Options:        For Linux/Windows:
+                       [--username    USERNAME]
                        [--password    PASSWORD]
                        [--ssh-key     KEY]
                        [--ssh-port    PORT]
@@ -156,6 +157,11 @@ echo_color_text() {
 error_and_exit() {
     error "$@"
     exit 1
+}
+
+echo_stage_header() {
+    echo
+    warn false "***** $1 *****"
 }
 
 show_dd_password_tips() {
@@ -1942,15 +1948,29 @@ verify_os_name() {
 }
 
 verify_os_args() {
+    # 必备参数
     case "$distro" in
-    dd) [ -n "$img" ] || error_and_exit "dd need --img" ;;
-    redhat) [ -n "$img" ] || error_and_exit "redhat need --img" ;;
+    dd) [ -n "$img" ] || error_and_exit "dd need --img." ;;
+    redhat) [ -n "$img" ] || error_and_exit "redhat need --img." ;;
     windows) [ -n "$image_name" ] || error_and_exit "Install Windows need --image-name." ;;
     esac
 
+    # 用户名/密码/证书相关
     case "$distro" in
-    netboot.xyz | windows) [ -z "$ssh_keys" ] || error_and_exit "not support ssh key for $distro" ;;
+    netboot.xyz)
+        [ -z "$username" ] || error_and_exit "not support set username for $distro."
+        [ -z "$password" ] || error_and_exit "not support set password for $distro."
+        [ -z "$ssh_keys" ] || error_and_exit "not support set ssh key for $distro."
+        ;;
+    windows)
+        [ -z "$ssh_keys" ] || error_and_exit "not support set ssh key for $distro."
+        ;;
     esac
+
+    # 不能同时使用证书和密码
+    if [ -n "$password" ] && [ -n "$ssh_keys" ]; then
+        error_and_exit "Cannot set both password and ssh key."
+    fi
 }
 
 get_cmd_path() {
@@ -2341,30 +2361,27 @@ trim() {
 }
 
 assert_username_valid() {
-    if ! msg=$(is_username_valid); then
-        error_and_exit "$msg"
-    fi
-}
-
-is_username_valid() {
     # https://learn.microsoft.com/windows-hardware/customize/desktop/unattend/microsoft-windows-shell-setup-useraccounts-localaccounts-localaccount-name
     # 不能为 none [ ] / \ : | < > + = ; , ? * % @
 
-    # 账号为空，则使用 Administrator
+    # 账号为空
     if [ -z "$username" ]; then
-        echo "Username: Will use the built-in Administrator account in ISO language."
-        return 0
+        error_and_exit "Username: Can not be empty."
     fi
 
+    # 账号为 none
     if [ "$(to_lower <<<"$username")" = none ]; then
-        echo "Username: Do not use the name \"NONE\", this is a restricted username."
-        return 1
+        error_and_exit "Username: Can not be 'none'."
     fi
 
+    # 账号包含非法字符
     if grep -q '[][/\:|<>+=;,?*%@]' <<<"$username"; then
-        echo "Username: Do not use any of the following characters: / \ [ ] : | < > + = ; , ? * % @"
-        return 1
+        error_and_exit "Username: Do not use any of the following characters: / \ [ ] : | < > + = ; , ? * % @"
     fi
+}
+
+is_administrator_username() {
+    username_in_lower=$(to_lower <<<"$1")
 
     # 如果输入以下用户名则忽略，并使用系统内置的 Administrator 账号
     # 防止系统有两个不同语言的 Administrator 账号而造成困扰
@@ -2376,20 +2393,31 @@ is_username_valid() {
         администратор \
         järjestelmänvalvoja \
         rendszergazda; do
-        if [ "$(to_lower <<<"$username")" = "$builtin_username" ]; then
-            echo "Username: Will use the built-in Administrator account in ISO language."
-            unset username
+        if [ "$username_in_lower" = "$builtin_username" ]; then
             return 0
         fi
     done
+
+    return 1
 }
 
 prompt_username() {
     info "prompt username"
-    warn false "Leave blank to use Administrator"
-    warn false "不填写则使用 Administrator"
+
+    if [ "$distro" = windows ]; then
+        default_username=administrator
+    else
+        default_username=root
+    fi
+
+    warn false "Leave blank to use $default_username"
+    warn false "不填写则使用 $default_username"
     IFS= read -r -p "Username: " username
     username="$(printf "%s" "$username" | trim)"
+
+    if [ -z "$username" ]; then
+        username=$default_username
+    fi
     assert_username_valid
 }
 
@@ -4499,9 +4527,7 @@ while true; do
         shift 2
         ;;
     --user | --username)
-        if ! [ "$distro" = windows ]; then
-            error_and_exit "$1 is only supported for installing Windows."
-        fi
+        [ -n "$2" ] || error_and_exit "Need value for $1"
         username="$(printf "%s" "$2" | trim)"
         assert_username_valid
         shift 2
@@ -4682,7 +4708,7 @@ done
 verify_os_args
 
 # 用户名
-if [ "$distro" = windows ] && [ -z "$username" ]; then
+if ! is_netboot_xyz && [ -z "$username" ]; then
     prompt_username
 fi
 
@@ -4964,54 +4990,130 @@ fi
 info 'info'
 echo "$distro $releasever"
 
-case "$distro" in
-windows) username=${username:-administrator} ;;
-netboot.xyz) username= ;;
-dd | *) username=root ;;
-esac
+ssh_port=${ssh_port:-22}
+rdp_port=${rdp_port:-3389}
+web_port=${web_port:-80}
 
-if [ -n "$username" ]; then
+if [ "$distro" = netboot.xyz ]; then
+    :
+elif [ "$distro" = alpine ] && [ "$hold" = 1 ]; then
+    echo_stage_header "Alpine Live OS"
     echo "Username: $username"
     if [ -n "$ssh_keys" ]; then
         echo "Public Key: $ssh_keys"
     else
         echo "Password: $password"
     fi
-    if [ -n "$ssh_port" ]; then
-        echo "SSH Port: $ssh_port"
-    fi
-fi
+    echo "SSH Port: $ssh_port"
 
-if is_netboot_xyz; then
-    echo 'Reboot to start netboot.xyz.'
-elif is_alpine_live; then
-    echo 'Reboot to start Alpine Live OS.'
-elif is_use_dd; then
+elif [ "$distro" = fnos ]; then
+    echo_stage_header "While Install (View Logs)"
+    echo "Username: $username"
+    if [ -n "$ssh_keys" ]; then
+        echo "Public Key: $ssh_keys"
+    else
+        echo "Password: $password"
+    fi
+    echo "SSH Port: $ssh_port"
+    echo "WEB Port: $web_port"
+
+    echo_stage_header "After Install"
+
+    echo "安装后不会开启 SSH 服务。"
+    echo "你需要尽快到 http://IP:5666 配置账号密码。"
+    echo
+    echo "SSH Service is disabled after installation."
+    echo "You need to config the username and password on http://IP:5666 as soon as possible."
+
+elif [ "$distro" = windows ]; then
+    echo_stage_header "While Install (View Logs)"
+    echo "Username: $username"
+    echo "Password: $password"
+    echo "SSH Port: $ssh_port"
+    echo "WEB Port: $web_port"
+
+    echo_stage_header "After Install"
+    if is_administrator_username "$username"; then
+        echo "Username: $username (Depends on Windows iso's language)"
+    else
+        echo "Username: $username"
+    fi
+    echo "Password: $password"
+    echo "RDP Port: $rdp_port"
+
+elif [ "$distro" = dd ]; then
+    echo_stage_header "While Install (View Logs)"
+    echo "Username: $username"
+    if [ -n "$ssh_keys" ]; then
+        echo "Public Key: $ssh_keys"
+    else
+        echo "Password: $password"
+    fi
+    echo "SSH Port: $ssh_port"
+    echo "WEB Port: $web_port"
+
+    echo_stage_header "After Install"
     if [ -n "$cloud_data" ]; then
         echo "Cloud Data: $cloud_data"
         echo "Cloud Data Files: $cloud_data_files"
+    else
+        echo "Username: [Depends on image]"
+        echo "Public Key: [Depends on image]"
+        echo "Password: [Depends on image]"
+        echo "SSH Port: [Depends on image]"
     fi
-    show_dd_password_tips
-    echo 'Reboot to start DD.'
-elif [ "$distro" = fnos ]; then
-    echo "Special note for FNOS:"
-    echo "Reboot to start the installation."
-    echo "SSH login is disabled when installation completed."
-    echo "You need to config the account and password on http://SERVER_IP:5666 as soon as possible."
-    echo
-    echo "飞牛 OS 注意事项："
-    echo "重启后开始安装。"
-    echo "安装完成后不支持 SSH 登录。"
-    echo "你需要尽快在 http://SERVER_IP:5666 配置账号密码。"
+
 else
-    echo "Reboot to start the installation."
+    # 普通 linux
+    echo_stage_header "While Install (View Logs)"
+    echo "Username: $username"
+    if [ -n "$ssh_keys" ]; then
+        echo "Public Key: $ssh_keys"
+    else
+        echo "Password: $password"
+    fi
+    echo "SSH Port: $ssh_port"
+    echo "WEB Port: $web_port"
+
+    echo_stage_header "After Install"
+    echo "Username: $username"
+    if [ -n "$ssh_keys" ]; then
+        echo "Public Key: $ssh_keys"
+    else
+        echo "Password: $password"
+    fi
+    echo "SSH Port: $ssh_port"
 fi
 
 if is_in_windows; then
+    echo
     echo 'You can run this command to reboot:'
     echo 'shutdown /r /t 0'
 fi
 
 echo
-echo "If you want to revert all changes made by this script, run \"$reinstall_____ reset\""
+if [ "$distro" = netboot.xyz ]; then
+    echo '重启后进入 netboot.xyz。'
+    echo "或者，现在运行 \"$reinstall_____ reset\" 以清除该引导项。"
+    echo
+    echo 'Reboot to start netboot.xyz.'
+    echo "Or, run \"$reinstall_____ reset\" now to clear this boot entry."
+    echo
+
+elif [ "$distro" = alpine ] && [ "$hold" = 1 ]; then
+    echo '重启后进入 Alpine Live OS。'
+    echo "或者，现在运行 \"$reinstall_____ reset\" 以清除该引导项。"
+    echo
+    echo 'Reboot to start Alpine Live OS.'
+    echo "Or, run \"$reinstall_____ reset\" now to clear this boot entry."
+    echo
+else
+    warn false '警告：重装会清除主硬盘的所有数据，包括所有分区！'
+    echo '重启后开始安装。'
+    echo "或者，现在运行 \"$reinstall_____ reset\" 以取消重装。"
+    echo
+    warn false 'Warning: Reinstalling will erase all data on the main disk, including all partitions!'
+    echo 'Reboot to start the installation.'
+    echo "Or, run \"$reinstall_____ reset\" now to cancel the installation."
+fi
 echo
